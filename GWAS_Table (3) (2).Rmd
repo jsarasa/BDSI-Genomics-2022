@@ -1,0 +1,196 @@
+---
+title: "GWAS_Table"
+author: "Jonathan Sarasa and Uma Nyx from the University of Michigan"
+date: '2022-08-11'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Loading in important libraries
+```{r}
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+library(tibble)
+library(readr)
+```
+
+Here is for reading in the SNP_Table from the cluster, it should work for everyone.
+You can download the file using this link: https://www.ebi.ac.uk/gwas/api/search/downloads/full
+If the SNP_Table import isn't working, change the directory location and name of the file to match the downloaded file
+```{r}
+## download the GWAS catalog file before running this (instructions above)
+SNP_Table <- read_tsv(file = '/home/gwas_catalog_v1.0-associations_e107_r2022-07-30.tsv')
+```
+
+Make SNP Table with specific variables. Also change column names.
+Depending on GWAS Catalog version, 'INITIAL SAMPLE DESCRIPTION' may be 'INITIAL SAMPLE SIZE' instead. Check SNP_Table and change the name of the column below if it 'INITIAL SAMPLE SIZE' is used instead.
+```{r}
+SNP_Table %>%
+  select(`SNPS`,`CHR_ID`,`CHR_POS`,`DISEASE/TRAIT`,`INITIAL SAMPLE DESCRIPTION`,`P-VALUE`) -> GWAS_Table
+
+names(GWAS_Table)[1] = "SNP"
+names(GWAS_Table)[4] = "TRAIT"
+names(GWAS_Table)[5] = "ANCESTRY GROUP"
+```
+
+Filter out sex chromosomes and chromosomes that say "NA". Drop multiple SNP listings. Sex chromosomes are not used because they are not included in the methylation dataset, Heyn et al (2013).
+```{r}
+GWAS_Table <- drop_na(GWAS_Table)
+GWAS_Table <- na.exclude(GWAS_Table)
+
+GWAS_Table %>%
+  filter(!grepl("X", GWAS_Table$CHR_ID)) -> GWAS_Table
+GWAS_Table %>%
+  filter(!grepl("Y", GWAS_Table$CHR_ID)) -> GWAS_Table
+GWAS_Table %>%
+  filter(!grepl(";", GWAS_Table$CHR_ID)) -> GWAS_Table
+GWAS_Table %>%
+  filter(!grepl(";", GWAS_Table$CHR_POS)) -> GWAS_Table
+GWAS_Table %>% 
+  filter(!grepl("x", GWAS_Table$CHR_ID)) -> GWAS_Table
+GWAS_Table %>% 
+  filter(!grepl("x", GWAS_Table$CHR_POS)) -> GWAS_Table
+GWAS_Table %>%
+  filter(!grepl("x", GWAS_Table$SNP)) -> GWAS_Table
+GWAS_Table %>%
+  filter(!grepl(";", GWAS_Table$SNP)) -> GWAS_Table
+```
+
+
+Filter by ethnicity. Only do this if filtering by ethnicity.
+Filter out all SNPs that don't contain "East Asian", "Chinese", "African" or "European. We use these ethnic groups because it matches the populations used in the methylation dataset from Heyn et al (2013)
+We remove other ethnicities and mixed studies.
+```{r}
+## removing ethnicities
+GWAS_Table %>% filter(grepl("European|African|Chinese|East Asian", GWAS_Table$`ANCESTRY GROUP`)) -> GWAS_Ethnicity
+
+## removing other ethnicities
+GWAS_Ethnicity %>% filter(!grepl("Middle Eastern|Japanese|Korean|Hispanic", GWAS_Ethnicity$`ANCESTRY GROUP`)) -> GWAS_Ethnicity
+
+GWAS_Ethnicity %>% filter(!(grepl("European", GWAS_Ethnicity$`ANCESTRY GROUP`)& grepl("African", GWAS_Ethnicity$`ANCESTRY GROUP`))) -> GWAS_Ethnicity
+
+GWAS_Ethnicity %>% filter(!(grepl("European", GWAS_Ethnicity$`ANCESTRY GROUP`)& grepl("Chinese", GWAS_Ethnicity$`ANCESTRY GROUP`))) -> GWAS_Ethnicity
+
+#remove mixed studies
+GWAS_Ethnicity %>% filter(!(grepl("Chinese", GWAS_Ethnicity$`ANCESTRY GROUP`)& grepl("African", GWAS_Ethnicity$`ANCESTRY GROUP`))) -> GWAS_Ethnicity
+
+GWAS_Ethnicity %>% filter(!(grepl("Asian", GWAS_Ethnicity$`ANCESTRY GROUP`)& grepl("African", GWAS_Ethnicity$`ANCESTRY GROUP`))) -> GWAS_Ethnicity
+
+GWAS_Ethnicity %>% filter(!(grepl("Asian", GWAS_Ethnicity$`ANCESTRY GROUP`)& grepl("European", GWAS_Ethnicity$`ANCESTRY GROUP`))) -> GWAS_Ethnicity
+
+```
+
+This step is only if you are not filtering by ethnicity
+```{r}
+# GWAS_Ethnicity <- GWAS_Table
+```
+
+This sets the ancestry group to one of three ethnic groups for easier sorting later down the pipleine
+```{r}
+GWAS_Ethnicity %>%
+mutate(
+  `ANCESTRY GROUP` = case_when(grepl("European",`ANCESTRY GROUP`) == TRUE ~ "European",
+  grepl("Chinese|East Asian|Han", `ANCESTRY GROUP`) == TRUE ~ "Chinese",
+  grepl("African", `ANCESTRY GROUP`) == TRUE ~ "African")
+) -> GWAS_Ethnicity
+```
+
+Filter out all SNPs that don't contain trait.
+Set trait to any disease/trait you are looking for.
+```{r}
+trait = "type 2 diabetes"
+
+GWAS_Ethnicity %>%
+  filter(grepl(trait, GWAS_Ethnicity$`TRAIT`, ignore.case = TRUE)) -> GWAS_Ethnicity
+```
+
+Here we do P-value filtering, where we filter out all the SNPs with an insignificant P-value. 5e-8 is the standard for genetics.
+```{r}
+GWAS_Ethnicity %>%
+  filter(GWAS_Ethnicity$`P-VALUE` < (5e-8)) -> GWAS_Ethnicity
+```
+
+Filtering out SNPs that have the same location and ethnicity
+```{r}
+GWAS_Ethnicity %>%
+  distinct(SNP,`ANCESTRY GROUP`,.keep_all = TRUE) -> GWAS_Distinct
+
+```
+
+If SNPs are same and one is European, remove row with European value
+Goal: Get differentially-associated SNPs present in Europeans
+Only keep ones that aren't found in Europeans at all
+```{r}
+# Save all European ones in GWAS_European
+GWAS_Distinct %>% 
+  filter(grepl("European", GWAS_Distinct$`ANCESTRY GROUP`)) -> GWAS_European
+GWAS_Distinct %>%
+  #puts Europeans first
+  arrange(desc(`ANCESTRY GROUP`)) %>% 
+  #keep ethnic SNPs that Europeans don't have
+  distinct(`SNP`,.keep_all = TRUE) %>% 
+  #delete all European SNPs
+  filter(!grepl("European", `ANCESTRY GROUP`, ignore.case = TRUE)) %>%
+  arrange(`ANCESTRY GROUP`) -> GWAS_Differential
+```
+
+Sort each table by position.
+```{r}
+GWAS_Differential <- arrange(GWAS_Differential, `CHR_ID`, `CHR_POS`)
+GWAS_European <- arrange(GWAS_European, `CHR_ID`, `CHR_POS`)
+```
+
+For each row in GWAS_Differential, make sure European values are not within delta (if both SNPs have the same trait). This is done so that we find only unique non-European SNPs; if the SNPs are too close it could be capturing the same correlation. Look at a zoomed in Manhattan plot to better understand this.
+```{r}
+# GWAS_Isolated is the table of Differentially Associated SNPs that are not within delta of a European SNP
+# If a SNP in GWAS_Differential is in the same chromosome and within delta of a SNP in GWAS_European, remove it
+
+GWAS_Differential$CHR_ID <- as.numeric(GWAS_Differential$CHR_ID)
+GWAS_European$CHR_ID <- as.numeric(GWAS_European$CHR_ID)
+
+GWAS_Differential$CHR_POS <- as.numeric(GWAS_Differential$CHR_POS)
+GWAS_European$CHR_POS <- as.numeric(GWAS_European$CHR_POS)
+
+delta = 250000
+
+GWAS_Diff_List <- as.list(GWAS_Differential$SNP)
+GWAS_European_List <- as.list(GWAS_European$SNP)
+
+# create list so it can be appended on to
+crossover_list <- list("first")
+european_match <- list("first")
+matches <- data.frame(crossover_list,european_match)
+
+rownames(GWAS_Differential) <- GWAS_Differential$SNP
+rownames(GWAS_European) <- GWAS_European$SNP
+already_matched <- FALSE
+
+  for (x in GWAS_Diff_List) {
+    already_matched = FALSE
+    for (y in GWAS_European_List) {
+      if (
+        (GWAS_Differential[x,]$CHR_ID == GWAS_European[y,]$CHR_ID) &
+        (GWAS_Differential[x,]$CHR_POS >= (GWAS_European[y,]$CHR_POS - delta)) &
+        (GWAS_Differential[x,]$CHR_POS <= (GWAS_European[y,]$CHR_POS + delta)) & !already_matched) {
+        crossover_list <- append(crossover_list, x)
+        european_match <- append(european_match,y)
+        already_matched <- TRUE
+      }
+    }
+  }
+
+# Below is to remove the first element of the list
+crossover_list <- unique(crossover_list)
+crossover_list <- crossover_list[crossover_list != "first"]
+
+GWAS_Differential %>% 
+  filter(!(`SNP` %in% crossover_list)) -> GWAS_Unique
+
+GWAS_Unique <- na.omit(GWAS_Unique)
+```
+
+You are now left with GWAS_Unique, which contains only unique non-European SNPs. Congrats!
